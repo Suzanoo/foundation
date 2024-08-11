@@ -1,7 +1,6 @@
 ## **Foundation Design**
-
-
-
+This app used ChatGPT helped to create the code.
+You can see the conversation here: [Foundation](https://chatgpt.com/share/8906bfbf-ed4d-46c3-a4ce-610d23dbe712)
 
 ### Instructions
 
@@ -21,7 +20,7 @@ cd <your project folder path>
 3. Clone this repository
 
 ```
-git clone <>
+git clone https://github.com/Suzanoo/foundation.git
 ```
 
 4. Create conda env and activate it
