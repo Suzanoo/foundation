@@ -1,10 +1,8 @@
-## **RC column design use Python**
-This CMD app use [ChatGPT](https://openai.com/chatgpt/) to generate the code.
-See the prompt from link below.
+## **Foundation Design**
 
 
 
-The app compute and display IR diagram of column section.
+
 ### Instructions
 
 1. Install Python, Git, Anaconda, and VSCode
@@ -29,7 +27,7 @@ git clone <>
 4. Create conda env and activate it
 
 ```
- conda create --name <your conda env name> python=3.10
+ conda create --name <your conda env name> python=3.xxx
  conda activate <your conda env name>
 ```
 

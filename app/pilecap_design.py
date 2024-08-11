@@ -12,41 +12,12 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
-from beam import Beam
-from rc.plot_shape import rectangleShape, addShape, add_Hline, add_Vline
-from rc.utils import Utils
-
-from beam import Beam
-
 from absl import app, flags
 from absl.flags import FLAGS
 
 
-# Factor and Constants:
-CURR = os.getcwd()
-df = pd.read_csv(os.path.join(CURR, "sections", "Deform_Bar.csv"))
-𝜙b = 0.90
-𝜙v = 0.85
+from beam_class import Beam
 
-𝜙 = {"6": 6, "9": 9, "12": 12, "16": 16, "20": 20, "25": 25, "28": 28, "32": 32}  # mm
-A = {
-    "6": 0.2827,
-    "9": 0.636,
-    "12": 1.131,
-    "16": 2.01,
-    "20": 3.146,
-    "25": 4.908,
-    "28": 6.157,
-    "32": 6.313,
-}  # cm2
-
-ut = Utils()
-
-# try initial rebar
-𝜙1 = 16  # main
-𝜙2 = 9  # traverse
-As = A[str(𝜙1)]
-Av = 2 * A[str(𝜙2)]
 
 # Material properties
 flags.DEFINE_float("fc", 24, "f'c in MPa")  # 240ksc
@@ -54,9 +25,13 @@ flags.DEFINE_float("fy", 425, "yeild for main reinforcement in MPa")
 flags.DEFINE_float("fv", 235, "yeild for traverse reinforcement in MPa")
 flags.DEFINE_float("Es", 2e5, "Young's Modelus in MPa")
 
+# Try reinf.
+flags.DEFINE_integer("main", 16, "initial main bar definition, mm")
+flags.DEFINE_integer("trav", 16, "initial traverse bar definition, mm")
+
 # Geometry
-flags.DEFINE_float("W", 0, "Width of column cross section, m")
-flags.DEFINE_float("H", 0, "Heigth of column cross section, m")
+flags.DEFINE_float("w", 0, "Width of column cross section, m")
+flags.DEFINE_float("h", 0, "Heigth of column cross section, m")
 
 flags.DEFINE_float("B", 0, "Width of footing, m")
 flags.DEFINE_float("L", 0, "Long of footing, m")
@@ -74,22 +49,32 @@ flags.DEFINE_float("Muy", 0, "Muy, kN")
 # TODO coding for Mx, My
 
 flags.DEFINE_float("c", 7.5, "Concrete covering, cm")
-flags.DEFINE_float("h", 1, "Excavation deep, m")
+flags.DEFINE_float("d", 1, "Excavation deep, m")
 
 flags.DEFINE_float("FS", 2.5, "design safety factor")
 
 # flags.DEFINE_float("Qsa", 30, "Pile capacity, tons/pile") # user input instead
 
+from utils import (
+    get_valid_integer,
+    get_valid_number,
+    get_valid_list_input,
+    calculate_center_of_gravity,
+    display_df,
+    toNumpy,
+)
+
+from plot_pliecap import plot_pilecap
+
+# Factor and Constants:
+CURRENT = os.getcwd()
+𝜙b = 0.90
+𝜙v = 0.85
+
 
 # ----------------------------------------
-# Capture coordinates input
-def toNumpy(x):
-    x = re.findall(r"[-+]?(?:\d*\.\d+|\d+)", x)
-    return np.array([float(n) for n in x])
-
-
 def load_in_pile(
-    P, Mx0, My0, N, coordinates, ex, ey, B, L, t, h, gamma, origin, Qsa, designFS
+    P, Mx0, My0, N, coordinates, ex, ey, B, L, t, d, gamma, origin, Qsa, designFS
 ):
     # Calculate Mx and My come from eccentricity
     Mx = Mx0 + P * ey  # kN-m
@@ -110,9 +95,6 @@ def load_in_pile(
         coord["xi"] = coord["newX"] - origin["x"]
         coord["yi"] = coord["newY"] - origin["y"]
 
-    print(*coordinates)
-    print(*processed_coords)
-
     # Coefficients: Ix, Iy, Ixy, m, n
     Iy = sum(coord["xi"] ** 2 for coord in processed_coords)
     Ix = sum(coord["yi"] ** 2 for coord in processed_coords)
@@ -126,7 +108,7 @@ def load_in_pile(
 
     # Self weight and Overburden
     self_weight = -(B * L * t * 2400 * 9.81e-3)  # kN, down
-    overburden = -(B * L * h * gamma * 9.81)  # kN, down
+    overburden = -(B * L * d * gamma * 9.81)  # kN, down
 
     # Load in each pile
     Ri = [
@@ -137,7 +119,7 @@ def load_in_pile(
     # Factor of safety of each pile
     FS = [abs((designFS * Qsa * 9.81) / ri) for ri in Ri]
 
-    print(f"\nPu : {P} kN")
+    print(f"Pu : {P} kN")
     print(f"Mux : {Mx0} kN-m")
     print(f"Muy : {My0} kN-m")
     print(f"Qsa : {Qsa} tons/pile")
@@ -162,15 +144,15 @@ def critical_section(d):
     d = d / 100  # m
 
     # Shear
-    vx = FLAGS.W / 2 + d
-    vy = FLAGS.H / 2 + d
+    vx = FLAGS.w / 2 + d
+    vy = FLAGS.h / 2 + d
 
     # moment
-    mx = FLAGS.W / 2
-    my = FLAGS.H / 2
+    mx = FLAGS.w / 2
+    my = FLAGS.h / 2
 
     # Punching
-    Ap = (FLAGS.W + FLAGS.H + 2 * d) * d  # m2
+    Ap = (FLAGS.w + FLAGS.h + 2 * d) * d  # m2
 
     return mx, my, vx, vy, Ap  # m ... m2
 
@@ -178,7 +160,9 @@ def critical_section(d):
 # Check punching shear
 def punching(d, Ru, A_punching):
     d = d / 100
-    N = input("Enter PILE NUMBER! againts punching at critical section? ex.1 2 3 4 : ")
+    N = input(
+        f"\nEnter PILE NUMBER! againts punching at critical section? ex.1 2 3 4 : "
+    )
     N = toNumpy(N).astype(int)  # convert numpy type
 
     if N.size == 0 or np.any(N, axis=0) == 0:
@@ -196,13 +180,14 @@ def punching(d, Ru, A_punching):
             𝜙v * 0.25 * np.sqrt(FLAGS.fc) * A_punching * 1e3
         )  # kN --> f'c = N/mm2, A = mm2
 
-        if 𝜙Vp > Vup:
+        if 𝜙Vp > abs(Vup):
             print(
                 f"𝜙Vp = {𝜙Vp:.2f} kN > Vup ={Vup:.2f} kN --> Punching shear capacity OK"
             )
+
         else:
             print(
-                f"𝜙Vp = {𝜙Vp:.2f} kN < Vup ={Vup:.2f} kN --> Punching shear capacity NOT OK"
+                f"[WARNING!] 𝜙Vp = {𝜙Vp:.2f} kN < Vup ={abs(Vup):.2f} kN Punching shear capacity is OVER!"
             )
 
 
@@ -211,7 +196,7 @@ def shear(B, d, Ru):
     # Calculated shear from Ri of piles
     d = d / 100
     N = input(
-        "Enter PILE NUMBER! againts shear at critical section?  ex.1 4 5 or 0 if no pile: "
+        "Enter PILE NUMBER! againts beam shear at critical section?  ex.1 4 5 or 0 if no pile: "
     )
     N = toNumpy(N).astype(int)  # convert numpy type
 
@@ -239,7 +224,7 @@ def shear(B, d, Ru):
 def moment(Ru, moment_arms):
     # Calculate Mu from Ri of piles * arm
     N = input(
-        "Enter PILE NUMBER! againts moment at critical section?, ex.1 4 5 or 0 if no pile: "
+        f"\nEnter PILE NUMBER! againts moment at critical section?, ex.1 4 5 or 0 if no pile: "
     )
     N = toNumpy(N).astype(int)  # convert numpy type
 
@@ -256,96 +241,92 @@ def moment(Ru, moment_arms):
         return Mu
 
 
-def plot_figures():
-    fig = go.Figure()
-    fig.update_layout(showlegend=False, title="Foundation Layout")
-    return fig
+# Design reinf.
+def reinf_design(Mu, instance):
+
+    # Check classification
+    instance.classification(Mu)
+
+    # Main bar required
+    instance.mainbar_req(Mu)
+
+    # Design main reinf
+    no, main_dia, As_main = instance.main_design()
+
+    return no, main_dia, As_main
 
 
 # ----------------------------------------
 def main(_argv):
     print(
-        "========================================================================================================"
+        "============================== PILECAP DESIGN : USD METHOD =============================="
     )
-    print('PILECAP DESIGN : USD METHOD')
 
-    # ----------------------------------------------------------------
-    # Input piles coordinates and calculate load in each pile
-    # ----------------------------------------------------------------
-
-    # Set the origin coordinate value, you can change.
+    print("[INFO] : PILES INFORMATION")
+    # Set the origin coordinate (0, 0)
     origin = {"x": 0, "y": 0}
 
-    # Input number of piles
-    N = int(input("How many piles? : "))  # TODO error raise if not digit
+    # Number of piles
+    N = get_valid_integer("How many piles? : ")
 
-    # Input pile size
-    pileSize = float(
-        input("Pile size = ?, unit in meters : ")
-    )  # TODO error raise if not digit
+    # Pile size (Now only square or rectangle )
+    pileSize = get_valid_number("Pile size = ?, unit in cm : ") * 1e-2
 
-    # Input pile capacity
-    Qsa = float(
-        input("Pile capacity = ? ,tons/pile : ")
-    )  # TODO error raise if not digit
+    # Pile capacity
+    Qsa = get_valid_number("Pile capacity = ? ,tons/pile : ")
 
-    # Input pile coordinate --> Quater path : Q1, Q2, Q3, Q4
-    while True:
-        # [x1, x2, x3, ...] x-value from C.G. of footing to C.G. of each pile, m
-        xCoords = input(
-            f"Define array of x-coordinate from C.G. of footing to C.G. of each pile. You've {N} piles, m : "
+    print(f"\n[INFO] : PILES COORDINATES")
+    print(
+        f"Next to define piles coordinate, please define as graph quater sequence(Q1, Q2, Q3, Q4)"
+    )
+
+    # [x1, x2, x3, ...] x-value from C.G. of footing to C.G. of each pile, m
+    x_coords = get_valid_list_input(
+        f"Define array of x-coordinate of each pile. You've {N} piles in m : ", N
+    )
+
+    # [y1, y2, y3, ...] y-value from C.G. of footing to C.G. of each pile, m
+    y_coords = get_valid_list_input(
+        f"\nDefine array of y-coordinate of each pile. You've {N} piles in m : ", N
+    )
+
+    x_deviate = (
+        get_valid_list_input(
+            f"\nDefine array of x-deviation of each pile. You've {N} piles in cm : ", N
         )
-        xCoords = toNumpy(xCoords)  # m
-
-        # [y1, y2, y3, ...] y-value from C.G. of footing to C.G. of each pile, m
-        yCoords = input(
-            f"Define array of y-coordinate from C.G. of footing to C.G. of each pile. You've {N} piles, m : "
+        * 1e-2
+    )  # convert cm to m
+    y_deviate = (
+        get_valid_list_input(
+            f"\nDefine array of y-deviation of each pile. You've {N} piles in cm : ", N
         )
-        yCoords = toNumpy(yCoords)  # m
-
-        deviateX = input(
-            f"Define array of x-deviation of each pile. You've {N} piles, cm : "
-        )
-        deviateX = toNumpy(deviateX) * 1e-2  # m
-
-        deviateY = input(
-            f"Define array of y-deviation of each pile. You've {N} piles, cm : "
-        )
-        deviateY = toNumpy(deviateY) * 1e-2  # m
-
-        if (
-            len(xCoords) == N
-            and len(yCoords) == N
-            and len(deviateX) == N
-            and len(deviateY) == N
-        ):
-            break
-        else:
-            print("Try again!")
+        * 1e-2
+    )  # convert cm to m
 
     # Create index of piles
     piles_number = []
-    for a, b in enumerate(xCoords):
+    for a, b in enumerate(x_coords):
         piles_number.append(a + 1)
 
     # Store coordinates of planed piles
-    planedPile = [{"x": x, "y": y} for x, y in zip(xCoords, yCoords)]  # m
+    planedPile = [{"x": x, "y": y} for x, y in zip(x_coords, y_coords)]  # m
 
     # Store coordinates of actual piles
     actualPile = [
         {"x": x + dx, "y": y + dy}
-        for x, y, dx, dy in zip(xCoords, yCoords, deviateX, deviateY)
+        for x, y, dx, dy in zip(x_coords, y_coords, x_deviate, y_deviate)
     ]  # m
 
     # Store coordinates of whole piles
     coordinates = [
         {"x": x, "y": y, "newX": x + dx, "newY": y + dy}
-        for x, y, dx, dy in zip(xCoords, yCoords, deviateX, deviateY)
+        for x, y, dx, dy in zip(x_coords, y_coords, x_deviate, y_deviate)
     ]
 
+    print(f"\n[INFO] : CALCULATE LOAD IN EACH PILE")
     # Calculate new CoG
     weights = [1 for coord in coordinates]
-    new_CoG = ut.calculate_center_of_gravity(actualPile, weights)
+    new_CoG = calculate_center_of_gravity(actualPile, weights)
 
     # Eccentricity
     ex = new_CoG["x"] - origin["x"]  # m
@@ -363,7 +344,7 @@ def main(_argv):
         FLAGS.B,
         FLAGS.L,
         FLAGS.t,
-        FLAGS.h,
+        FLAGS.d,
         FLAGS.gamma,
         origin,
         Qsa,
@@ -374,155 +355,98 @@ def main(_argv):
     FS = np.array(FS)
 
     # Effective depth
-    d1 = FLAGS.c + 𝜙2 / 10 + 𝜙1 / 10 / 2  # cm
+    d1 = FLAGS.c + FLAGS.main / 5 + FLAGS.trav / 10  # cm
     d = 100 * FLAGS.t - d1  # cm
 
-    print("--------------------------------------------------------------")
+    # Calculate critical section for M, V, Vp
     mx, my, vx, vy, Ap = critical_section(d)
 
-    # ----------------------------------------------------------------
-    # Plot pile cap
-    # ----------------------------------------------------------------
-    fig = plot_figures()
-
-    # Column and pilecap shapes
-    column_shapes = rectangleShape(origin, FLAGS.W, FLAGS.H)
-    footing_shapes = rectangleShape(origin, FLAGS.B, FLAGS.L)
-    addShape(fig, column_shapes, color="#b3bcc9")
-    addShape(fig, footing_shapes, color="#b3bcc9")
-
-    # Planed piles shapes
-    for coord, label in zip(planedPile, piles_number):
-        CL = {"x": coord["x"], "y": coord["y"]}
-        planedPileShape = rectangleShape(CL, pileSize, pileSize)
-        addShape(fig, planedPileShape, color="#1a66a1")
-
-        # Annotations
-        fig.add_annotation(
-            text=str(label),
-            x=coord["x"],
-            y=coord["y"],
-            showarrow=False,
-            font=dict(color="red", size=11),
-        )
-
-    # Actual piles shapes
-    for coord, label in zip(actualPile, piles_number):
-        CL = {"x": coord["x"], "y": coord["y"]}
-        actualPileShape = rectangleShape(CL, pileSize, pileSize)
-        addShape(fig, actualPileShape, color="#eb9234")
-
-    # Critical line of M
-    add_Vline(fig, mx, [-FLAGS.L / 2, FLAGS.L / 2], color="green")
-    add_Hline(fig, my, [-FLAGS.B / 2, FLAGS.B / 2], color="green")
-
-    # Critical line of V
-    add_Vline(fig, vx, [-FLAGS.L / 2, FLAGS.L / 2], color="blue")
-    add_Hline(fig, vy, [-FLAGS.B / 2, FLAGS.B / 2], color="blue")
-
-    # Ctrical bound of punching
-    punching_shapes = rectangleShape(origin, FLAGS.W + d * 1e-2, FLAGS.H + d * 1e-2)
-    addShape(fig, punching_shapes, line_type="dash", fill_option=False, color="#eb9234")
-
-    fig.show()
-
-    # ----------------------------------------------------------------
-    # Design reinforcement
-    # ----------------------------------------------------------------
-    W = FLAGS.W
-    D = FLAGS.H
-    B = FLAGS.B
-    L = FLAGS.L
+    # Display pilecap
+    plot_pilecap(
+        FLAGS.w,
+        FLAGS.h,
+        FLAGS.B,
+        FLAGS.L,
+        d,
+        mx,
+        my,
+        vx,
+        vy,
+        origin,
+        piles_number,
+        pileSize,
+        planedPile,
+        actualPile,
+    )
 
     # check punching shear capacity
     # for symmetry footing each R in Rn, Ru is equal
     punching(d, Ri, Ap)
 
-    # X-X axis
-    print(f"\nX-X Axis :")
+    print(f"\n[INFO] : DESIGN REINFORCEMENT")
+    W = FLAGS.w
+    D = FLAGS.h
+    B = FLAGS.B
+    L = FLAGS.L
+
+    # Display rebar df
+    table = os.path.join(CURRENT, "data/Deform_Bar.csv")
+    df = pd.read_csv(table)
+    display_df(df)
+
+    print(f"\n==================== X-X Axis ====================")
 
     # check shear capacity
     Vu = shear(B, d, -1 * Ri)
-    print("--------------------------------------------------------------")
 
     # #check moment capacity
-    Mu = moment(-1 * Ri, xCoords)
-    print("--------------------------------------------------------------")
+    Mu = moment(-1 * Ri, x_coords)
 
-    beam = Beam(FLAGS.fc, FLAGS.fy, FLAGS.fv, FLAGS.c)
+    # Instanciate
+    beam = Beam(fc=FLAGS.fc, fy=FLAGS.fy, fv=FLAGS.fv, c=FLAGS.c)
 
-    beam.initial(𝜙1, 𝜙2, B * 100, FLAGS.t * 100, L, Mu, Vu=0)
-
-    β1 = beam.beta()
+    beam.section_properties(FLAGS.main, FLAGS.trav, L * 100, FLAGS.t * 100)
     d, d1 = beam.eff_depth()
-    pmin, pmax1, p = beam.percent_reinf()
+    beam.capacity()
 
-    # Calculate 𝜙Mn
-    𝜙Mn1 = beam.capacity(d)
+    # Design reinf.
+    no, main_dia, As_main = reinf_design(Mu, beam)
 
-    # Check classification
-    classify = beam.classification(Mu, 𝜙Mn1)
-
-    # Main bar required
-    data = beam.mainbar_req(d, d1, 𝜙Mn1, Mu, classify)
-
-    # Design main reinf
-    beam.db()
-    dia_main, As_main = beam.main_call(data)
-
-    # ----------------------------------------------------------------
-    # Y-Y axis
-    print("===================================================================")
-    ## swap variable for y-y axis
-    print(f"\nY-Y Axis :")
+    print(f"\n==================== Y-Y Axis ====================")
+    # Swapp variable
     W, D = D, W
     B, L = L, B
 
     # check shear capacity
     Vu = shear(B, d, -1 * Ri)
-    print("--------------------------------------------------------------")
 
-    # #check moment capacity
-    Mu = moment(-1 * Ri, xCoords)
-    print("--------------------------------------------------------------")
+    # check moment capacity
+    Mu = moment(-1 * Ri, x_coords)
 
-    beam = Beam(FLAGS.fc, FLAGS.fy, FLAGS.fv, FLAGS.c)
-    beam.initial(𝜙1, 𝜙2, B * 100, FLAGS.t * 100, L, Mu, Vu=0)
-
-    β1 = beam.beta()
+    # Instanciate
+    beam.section_properties(FLAGS.main, FLAGS.trav, L * 100, FLAGS.t * 100)
     d, d1 = beam.eff_depth()
-    pmin, pmax1, p = beam.percent_reinf()
+    beam.capacity()
 
-    # Calculate 𝜙Mn
-    𝜙Mn1 = beam.capacity(d)
+    # Design reinf.
+    no, main_dia, As_main = reinf_design(Mu, beam)
 
-    # Check classification
-    classify = beam.classification(Mu, 𝜙Mn1)
-
-    # Main bar required
-    data = beam.mainbar_req(d, d1, 𝜙Mn1, Mu, classify)
-
-    # Design main reinf
-    beam.db()
-    beam.main_call( data)
+    return
 
 
 if __name__ == "__main__":
     app.run(main)
 
-# TODO bandwidth for reinf.layout, round pile
 """
--Please see FLAGS definition for unit informations
--Make sure you are in the project directory run python in terminal(Mac) or command line(Windows)
 -run script
     cd <path to project directory>
     conda activate <your conda env name>
 
     ex.2-piles
-    python app/pilecap_design.py --W=0.2 --H=0.2 --B=0.5 --L=0.5 --t=0.3 --Pu=80 --Mux=0 --Muy=2
+    python app/pilecap_design.py --w=0.2 --h=0.2 --B=0.5 --L=0.5 --t=0.3 --Pu=80 --Mux=0 --Muy=2
 
     ex.4-piles
-    python app/pilecap_design.py --W=0.4 --H=0.6 --B=2.1 --L=1.5 --t=0.75 --Pu=2300 --Mux=60 --Muy=90
+    python app/pilecap_design.py --w=0.4 --h=0.6 --B=2.1 --L=1.5 --t=0.75 --Pu=2300 --Mux=60 --Muy=90
 
     .75 -.75 -.75 .75
     .45 .45 -.45 -.45
